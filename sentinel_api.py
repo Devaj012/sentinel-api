@@ -36,8 +36,7 @@ logger = logging.getLogger(__name__)
 # ──────────────────────────────────────────────
 #  Configuration
 # ──────────────────────────────────────────────
-OLLAMA_HOST = "http://localhost:11434"
-OLLAMA_MODEL = "llama3"  # Change to mistral, neural-chat, etc. for speed
+AI_MODEL = "llama3-70b-8192"  # Change to mistral, neural-chat, etc. for speed
 
 # Phishing detection patterns
 PHISHING_PATTERNS = {
