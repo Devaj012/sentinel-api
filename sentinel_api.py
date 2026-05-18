@@ -381,8 +381,7 @@ def config():
     Returns API configuration info
     """
     return jsonify({
-        "ollama_host": OLLAMA_HOST,
-        "ollama_model": OLLAMA_MODEL,
+       "ai_model": AI_MODEL,
         "endpoints": {
             "health": "/health",
             "analyze": "/api/analyze",
@@ -414,8 +413,7 @@ def internal_error(error):
 # ──────────────────────────────────────────────
 if __name__ == '__main__':
     logger.info("Starting SENTINEL API Server...")
-    logger.info(f"Ollama Host: {OLLAMA_HOST}")
-    logger.info(f"Ollama Model: {OLLAMA_MODEL}")
+    logger.info(f"AI Model: {AI_MODEL}")
     logger.info("Listening on http://0.0.0.0:5000")
     logger.info("Endpoints:")
     logger.info("  - GET  /health")
