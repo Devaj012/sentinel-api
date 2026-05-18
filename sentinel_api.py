@@ -14,11 +14,17 @@ import requests
 import logging
 from datetime import datetime
 from typing import Dict, Any, Tuple
+import os
+from groq import Groq
+
 
 # ──────────────────────────────────────────────
 #  Setup
 # ──────────────────────────────────────────────
 app = Flask(__name__)
+groq_client = Groq(
+    api_key=os.getenv("GROQ_API_KEY")
+)
 CORS(app)  # Allow requests from n8n
 
 logging.basicConfig(
