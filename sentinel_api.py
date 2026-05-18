@@ -149,21 +149,22 @@ Respond with ONLY valid JSON (no markdown, no extra text):
     for attempt in range(max_retries):
         try:
             logger.info(f"LLM Analysis attempt {attempt + 1}/{max_retries}")
-            response = requests.post(
-                f"{OLLAMA_HOST}/api/generate",
-                json={
-                    "model": OLLAMA_MODEL,
-                    "prompt": prompt,
-                    "stream": False,
-                    "temperature": 0.3  # Lower temp for consistency
-                },
-                timeout=60
-            )
-            response.raise_for_status()
-            
-            result = response.json()
-            response_text = result.get("response", "{}")
-            
+            response = groq_client.chat.completions.create(
+    model=AI_MODEL,
+    messages=[
+        {
+            "role": "system",
+            "content": "You are an advanced email security AI. Analyze emails for phishing, scams, malware, suspicious intent, fraud, urgency, and cyber threats. Respond ONLY in JSON format."
+        },
+        {
+            "role": "user",
+            "content": prompt
+        }
+    ],
+    temperature=0.2
+)
+
+response_text = response.choices[0].message.content
             # Extract JSON from response
             json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
             if json_match:
