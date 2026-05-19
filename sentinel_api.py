@@ -1,12 +1,10 @@
 """
-SENTINEL API - Groq LLM + Fixed Heuristic
-Properly decodes Gmail base64 email body from n8n
+SENTINEL API - Groq LLM - Debug Version
 """
 
 import os
 import re
 import json
-import base64
 import logging
 import requests
 from flask import Flask, request, jsonify
@@ -20,235 +18,165 @@ app = Flask(__name__)
 CORS(app)
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
-GROQ_MODEL   = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+GROQ_MODEL   = os.environ.get("GROQ_MODEL", "llama3-8b-8192")
 PORT         = int(os.environ.get("PORT", 5000))
 
-logger.info(f"=== SENTINEL STARTING === model:{GROQ_MODEL} key_set:{bool(GROQ_API_KEY)}")
+logger.info(f"=== SENTINEL STARTING ===")
+logger.info(f"GROQ_API_KEY present: {bool(GROQ_API_KEY)}")
+logger.info(f"GROQ_API_KEY length: {len(GROQ_API_KEY)}")
+logger.info(f"GROQ_API_KEY starts with: {GROQ_API_KEY[:8] if GROQ_API_KEY else 'EMPTY'}")
+logger.info(f"GROQ_MODEL: {GROQ_MODEL}")
+logger.info(f"PORT: {PORT}")
 
-# ── Heuristic patterns ──
 PHISHING_KEYWORDS = [
     "urgent", "immediate action", "act now", "verify account",
     "confirm identity", "suspended", "locked", "limited time",
     "click here", "download now", "update payment", "confirm details",
-    "unusual activity", "security alert", "verify password",
-    "your account", "reset password", "login attempt", "unusual sign",
-    "will be suspended", "verify your", "validate your"
+    "unusual activity", "security alert"
 ]
 SPAM_KEYWORDS = [
     "viagra", "cialis", "casino", "lottery", "prize",
-    "congratulations", "claim reward", "you have won",
-    "limited offer", "buy now", "earn money", "work from home",
-    "make money fast", "free gift", "click below"
+    "congratulations", "claim reward", "you have won", "limited offer", "buy now"
 ]
-SUSPICIOUS_TLDS = [".xyz", ".ru", ".tk", ".top", ".cn", ".pw", ".ml", ".ga", ".cf"]
-
-SOCIAL_ENGINEERING = [
-    "send me", "transfer", "wire", "bitcoin", "gift card",
-    "i need to buy", "send money", "bank account", "western union",
-    "you owe", "payment required", "invoice attached"
-]
+SUSPICIOUS_TLDS = [".xyz", ".ru", ".tk", ".top", ".cn", ".pw"]
 
 
-# ── Decode base64 Gmail body ──
-def decode_body(text: str) -> str:
-    """Gmail sends base64url-encoded body via n8n. Decode it."""
-    if not text:
-        return ""
-
-    # If it looks like base64 (long string, no spaces, contains +/= or url-safe chars)
-    cleaned = text.strip().replace('\n', '').replace('\r', '')
-    if len(cleaned) > 100 and ' ' not in cleaned[:100]:
-        try:
-            # Try URL-safe base64 first (Gmail uses this)
-            decoded = base64.urlsafe_b64decode(cleaned + '==').decode('utf-8', errors='ignore')
-            if decoded and len(decoded) > 10:
-                logger.info(f"Decoded base64 body: {len(decoded)} chars")
-                # Strip HTML tags if present
-                decoded = re.sub(r'<[^>]+>', ' ', decoded)
-                decoded = re.sub(r'\s+', ' ', decoded).strip()
-                return decoded
-        except Exception:
-            pass
-        try:
-            # Try standard base64
-            decoded = base64.b64decode(cleaned + '==').decode('utf-8', errors='ignore')
-            if decoded and len(decoded) > 10:
-                decoded = re.sub(r'<[^>]+>', ' ', decoded)
-                decoded = re.sub(r'\s+', ' ', decoded).strip()
-                return decoded
-        except Exception:
-            pass
-
-    # Already plain text — just strip HTML if any
-    plain = re.sub(r'<[^>]+>', ' ', text)
-    plain = re.sub(r'\s+', ' ', plain).strip()
-    return plain
-
-
-# ── Heuristic Analysis ──
 def heuristic_analysis(sender: str, subject: str, body: str) -> dict:
     score = 0
     flags = []
-    # Combine all text for scanning
-    text = (sender + " " + subject + " " + body).lower()
+    text  = (sender + " " + subject + " " + body).lower()
 
-    logger.info(f"Heuristic scanning text ({len(text)} chars): '{text[:200]}'")
+    ph = sum(1 for kw in PHISHING_KEYWORDS if kw in text)
+    if ph:
+        score += ph * 8
+        flags.append(f"phishing_keywords:{ph}")
 
-    # Phishing keywords
-    ph_hits = [kw for kw in PHISHING_KEYWORDS if kw in text]
-    if ph_hits:
-        score += len(ph_hits) * 8
-        flags.append(f"phishing_keywords: {', '.join(ph_hits[:3])}")
-        logger.info(f"Phishing hits: {ph_hits}")
+    sp = sum(1 for kw in SPAM_KEYWORDS if kw in text)
+    if sp:
+        score += sp * 6
+        flags.append(f"spam_keywords:{sp}")
 
-    # Spam keywords
-    sp_hits = [kw for kw in SPAM_KEYWORDS if kw in text]
-    if sp_hits:
-        score += len(sp_hits) * 6
-        flags.append(f"spam_keywords: {', '.join(sp_hits[:3])}")
-        logger.info(f"Spam hits: {sp_hits}")
-
-    # Social engineering (money requests etc.)
-    se_hits = [kw for kw in SOCIAL_ENGINEERING if kw in text]
-    if se_hits:
-        score += len(se_hits) * 12
-        flags.append(f"social_engineering: {', '.join(se_hits[:3])}")
-        logger.info(f"Social engineering hits: {se_hits}")
-
-    # Suspicious sender domain
     if "@" in sender:
         domain = sender.split("@")[1].lower()
         if any(domain.endswith(t) for t in SUSPICIOUS_TLDS):
             score += 20
-            flags.append(f"suspicious_tld: {domain}")
+            flags.append("suspicious_tld")
         if len(domain) > 30:
             score += 10
             flags.append("long_domain")
         if domain.count("-") >= 2:
             score += 8
-            flags.append("multiple_hyphens_in_domain")
+            flags.append("multiple_hyphens")
 
-    # All caps subject
-    if subject and subject == subject.upper() and len(subject) > 5:
+    if subject == subject.upper() and len(subject) > 10:
         score += 10
         flags.append("all_caps_subject")
 
-    # Very short email body
-    if len(body.strip()) < 50:
+    if len(body) < 50:
         score += 5
-        flags.append("very_short_body")
+        flags.append("very_short_email")
 
-    # URLs in body
     urls = re.findall(r'https?://\S+', body)
     if urls:
         score += 3 * len(urls)
-        flags.append(f"contains_{len(urls)}_url(s)")
+        flags.append(f"url_count:{len(urls)}")
 
-    final_score = min(score, 100)
-    logger.info(f"Heuristic score: {final_score} | flags: {flags}")
-
-    return {
-        "heuristic_score": final_score,
-        "heuristic_flags": flags[:5]
-    }
+    return {"heuristic_score": min(score, 100), "heuristic_flags": flags[:4]}
 
 
-# ── Groq LLM Analysis ──
 def groq_analysis(sender: str, subject: str, body: str) -> dict:
     if not GROQ_API_KEY:
-        return {"success": False, "error": "GROQ_API_KEY not set"}
+        logger.error("GROQ_API_KEY is empty!")
+        return {"success": False, "error": "GROQ_API_KEY not set in Railway variables"}
 
     api_key = GROQ_API_KEY.strip()
-    logger.info(f"Calling Groq: model={GROQ_MODEL}")
+
+    logger.info(f"Calling Groq... key starts: {api_key[:10]}... model: {GROQ_MODEL}")
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
 
     payload = {
         "model": GROQ_MODEL,
         "messages": [
             {
                 "role": "system",
-                "content": "You are a cybersecurity email threat analyst. Always respond with only valid JSON, no markdown."
+                "content": "You are a cybersecurity email threat analyst. Always respond with only valid JSON."
             },
             {
                 "role": "user",
-                "content": f"""Analyze this email for phishing, spam, and social engineering threats.
+                "content": f"""Analyze this email for threats.
 
 From: {sender}
 Subject: {subject}
-Body: {body[:600]}
+Body: {body[:500]}
 
-Return ONLY this JSON structure (fill in the values):
-{{"risk_score": 0, "classification": "legitimate", "explanation": "one sentence here", "red_flags": []}}
-
-Classification must be one of: phishing, malware, spam, suspicious, legitimate
-risk_score: 0-100 (0=safe, 100=critical threat)"""
+Respond with ONLY this JSON (no markdown, no extra text):
+{{"risk_score": 0, "classification": "legitimate", "explanation": "explanation here", "red_flags": []}}"""
             }
         ],
         "temperature": 0.1,
-        "max_tokens": 250
+        "max_tokens": 200
     }
 
     try:
         resp = requests.post(
             "https://api.groq.com/openai/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json"
-            },
+            headers=headers,
             json=payload,
             timeout=25
         )
 
         logger.info(f"Groq status: {resp.status_code}")
+        logger.info(f"Groq body: {resp.text[:500]}")
 
-        if resp.status_code != 200:
-            logger.error(f"Groq error: {resp.text[:300]}")
-            return {"success": False, "error": f"Groq {resp.status_code}: {resp.text[:150]}"}
+        if resp.status_code == 400:
+            return {"success": False, "error": f"Groq 400: {resp.text[:200]}"}
+        if resp.status_code == 401:
+            return {"success": False, "error": "Groq 401: Invalid API key"}
+        if resp.status_code == 429:
+            return {"success": False, "error": "Groq 429: Rate limited"}
+
+        resp.raise_for_status()
 
         content = resp.json()["choices"][0]["message"]["content"]
-        logger.info(f"Groq response: {content[:300]}")
+        logger.info(f"Groq content: {content[:300]}")
 
-        # Extract JSON from response
-        match = re.search(r'\{.*\}', content, re.DOTALL)
+        match = re.search(r'\{.*?\}', content, re.DOTALL)
         if match:
             data = json.loads(match.group(0))
-            # Ensure risk_score is int
-            data["risk_score"] = int(data.get("risk_score", 0))
-            logger.info(f"Groq success: score={data['risk_score']} class={data.get('classification')}")
             return {"success": True, "analysis": data}
         else:
-            return {"success": False, "error": f"No JSON in Groq response: {content[:100]}"}
+            return {"success": False, "error": f"No JSON in response: {content[:100]}"}
 
     except requests.exceptions.Timeout:
-        return {"success": False, "error": "Groq timeout"}
+        return {"success": False, "error": "Groq timeout after 25s"}
+    except requests.exceptions.ConnectionError as e:
+        return {"success": False, "error": f"Cannot connect to Groq: {str(e)[:100]}"}
     except Exception as e:
         logger.error(f"Groq error: {e}", exc_info=True)
         return {"success": False, "error": str(e)}
 
 
-# ── Combined Analysis ──
 def analyze_email(sender: str, subject: str, body: str) -> dict:
-    # Decode body first (handles Gmail base64)
-    decoded_body = decode_body(body)
-    logger.info(f"Body after decode: '{decoded_body[:200]}'")
-
-    h       = heuristic_analysis(sender, subject, decoded_body)
+    h       = heuristic_analysis(sender, subject, body)
     h_score = h["heuristic_score"]
-    groq    = groq_analysis(sender, subject, decoded_body)
+    groq    = groq_analysis(sender, subject, body)
 
     if groq["success"]:
         a         = groq["analysis"]
         llm_score = int(a.get("risk_score", h_score))
         final     = int(h_score * 0.3 + llm_score * 0.7)
-        logger.info(f"Blend: h={h_score} llm={llm_score} final={final}")
         return {
             "risk_score":      min(final, 100),
             "classification":  a.get("classification", "unknown"),
             "explanation":     a.get("explanation", ""),
-            "red_flags":       a.get("red_flags", []) + h["heuristic_flags"],
+            "red_flags":       a.get("red_flags", []),
             "heuristic_score": h_score,
             "llm_score":       llm_score,
             "method":          "groq_blend",
-            "decoded_body_preview": decoded_body[:100],
             "timestamp":       datetime.now().isoformat()
         }
     else:
@@ -260,23 +188,21 @@ def analyze_email(sender: str, subject: str, body: str) -> dict:
         return {
             "risk_score":      h_score,
             "classification":  cls,
-            "explanation":     f"Heuristic analysis (Groq error: {groq.get('error', 'unknown')})",
+            "explanation":     f"Heuristic only — Groq error: {groq.get('error', 'unknown')}",
             "red_flags":       h["heuristic_flags"],
             "method":          "heuristic_only",
-            "decoded_body_preview": decoded_body[:100],
             "timestamp":       datetime.now().isoformat()
         }
 
 
-# ── Routes ──
 @app.route('/health', methods=['GET'])
 def health():
-    key = GROQ_API_KEY.strip() if GROQ_API_KEY else ""
+    api_key = GROQ_API_KEY.strip() if GROQ_API_KEY else ""
     return jsonify({
         "status":          "ok",
         "service":         "SENTINEL API",
-        "groq_key_set":    bool(key),
-        "groq_key_prefix": key[:10] + "..." if key else "EMPTY",
+        "groq_key_set":    bool(api_key),
+        "groq_key_prefix": api_key[:10] + "..." if api_key else "EMPTY",
         "groq_model":      GROQ_MODEL,
         "timestamp":       datetime.now().isoformat()
     }), 200
@@ -284,30 +210,32 @@ def health():
 
 @app.route('/api/test-groq', methods=['GET'])
 def test_groq():
-    key = GROQ_API_KEY.strip() if GROQ_API_KEY else ""
-    if not key:
+    """Direct Groq connection test"""
+    api_key = GROQ_API_KEY.strip() if GROQ_API_KEY else ""
+    if not api_key:
         return jsonify({"error": "GROQ_API_KEY not set"}), 400
     try:
         resp = requests.post(
             "https://api.groq.com/openai/v1/chat/completions",
-            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-            json={"model": GROQ_MODEL, "messages": [{"role": "user", "content": "Say: WORKING"}], "max_tokens": 10},
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": GROQ_MODEL,
+                "messages": [{"role": "user", "content": "Say the word: WORKING"}],
+                "max_tokens": 10
+            },
             timeout=15
         )
-        return jsonify({"status_code": resp.status_code, "response": resp.text[:300], "model": GROQ_MODEL}), 200
+        return jsonify({
+            "status_code": resp.status_code,
+            "response":    resp.text[:500],
+            "key_prefix":  api_key[:10] + "...",
+            "model":       GROQ_MODEL
+        }), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
-
-@app.route('/api/test-heuristic', methods=['GET'])
-def test_heuristic():
-    """Test heuristic with a known phishing sample"""
-    result = analyze_email(
-        sender="noreply@fake-bank.xyz",
-        subject="URGENT: VERIFY YOUR ACCOUNT NOW",
-        body="Click here to verify your account immediately or it will be suspended. Send me 1000 rupees gift card."
-    )
-    return jsonify(result), 200
 
 
 @app.route('/api/analyze', methods=['POST'])
@@ -325,10 +253,10 @@ def analyze():
         if not body:
             return jsonify({"error": "Missing 'text' field"}), 400
 
-        logger.info(f"Analyze: id={message_id} from={sender[:40]} body_len={len(body)}")
+        logger.info(f"Analyze: id={message_id} from={sender[:30]}")
         result               = analyze_email(sender, subject, body[:50000])
         result["message_id"] = message_id
-        logger.info(f"Done: score={result['risk_score']} method={result['method']}")
+        logger.info(f"Result: score={result['risk_score']} method={result['method']}")
         return jsonify(result), 200
 
     except Exception as e:
