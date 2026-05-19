@@ -1,0 +1,1 @@
+web: gunicorn sentinel_api_groq:app
